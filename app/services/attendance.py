@@ -147,7 +147,7 @@ class AttendanceService:
                 time.sleep(poll_secs)
 
             except TimeoutException:
-                logger.warning("Timeout waiting for UI at %s; refreshing; next check in %ss", self._safe_url(), poll_secs)
+                logger.info("Timeout waiting for UI at %s; refreshing; next check in %ss", self._safe_url(), poll_secs)
                 try:
                     if self.driver:
                         self.driver.refresh()
