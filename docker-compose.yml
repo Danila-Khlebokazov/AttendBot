@@ -4,7 +4,7 @@ x-selenium-common: &selenium-common
   shm_size: 2gb
   restart: unless-stopped
   environment:
-    - SE_NODE_MAX_SESSIONS=3
+    - SE_NODE_MAX_SESSIONS=5
     - SE_NODE_OVERRIDE_MAX_SESSIONS=true
     - SE_START_XVFB=true
   networks:

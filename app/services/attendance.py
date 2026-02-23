@@ -2,6 +2,7 @@ import logging
 import time
 from datetime import datetime, timedelta
 from typing import Callable, Optional
+import threading
 
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -36,7 +37,7 @@ class AttendanceService:
         self.driver: Optional[WebDriver] = driver
         self._wait_seconds = wait_seconds
         self.wait: Optional[WebDriverWait] = WebDriverWait(driver, wait_seconds) if driver else None
-        self.login_page: Optional[LoginPage] = LoginPage(driver) if driver else None
+        self.login_page: Optional[LoginPage] = LoginPage(driver, wait_seconds) if driver else None
 
         self.tg = telegram
         self.schedule = schedule
@@ -56,7 +57,7 @@ class AttendanceService:
     def _rebind_driver(self, driver: WebDriver) -> None:
         self.driver = driver
         self.wait = WebDriverWait(driver, self._wait_seconds)
-        self.login_page = LoginPage(driver)
+        self.login_page = LoginPage(driver, self._wait_seconds)
 
     def _open_driver(self, reason: str) -> None:
         logger.info("Opening WebDriver (reason: %s)", reason)
@@ -114,11 +115,30 @@ class AttendanceService:
 
     # ---------- main loop ----------
 
-    def run_loop(self, username: str, password: str, poll_secs: int = 10) -> None:
+    def run_loop(
+        self,
+        username: str,
+        password: str,
+        poll_secs: int = 10,
+        stop_event: Optional[threading.Event] = None,
+    ) -> None:
 
         logger.info("Starting schedule-aware loop (poll=%ss, tz=%s)", poll_secs, self.schedule.tz.key)
 
-        while True:
+        def sleep_or_stop(seconds: int) -> bool:
+            """Sleep up to `seconds`; return True if stopped early."""
+            if stop_event is None:
+                time.sleep(seconds)
+                return False
+            chunk = 2
+            remaining = max(0, seconds)
+            while remaining > 0:
+                if stop_event.wait(timeout=min(remaining, chunk)):
+                    return True
+                remaining -= chunk
+            return False
+
+        while stop_event is None or not stop_event.is_set():
             now = datetime.now(self.schedule.tz)
             secs = self.schedule.seconds_until_next_open(now)
 
@@ -127,7 +147,8 @@ class AttendanceService:
                     self._shutdown_driver("outside schedule window")
                 wake = now + timedelta(seconds=secs)
                 logger.info("Outside schedule — sleeping until %s (%ds)", wake.strftime("%Y-%m-%d %H:%M:%S %Z"), secs)
-                time.sleep(secs)
+                if sleep_or_stop(secs):
+                    break
                 continue
 
             if not self.driver:
@@ -137,14 +158,17 @@ class AttendanceService:
                 self.ensure_logged_in(username, password)
                 self.try_attend_once()
                 logger.debug("Sleeping %ss (inside window)", poll_secs)
-                time.sleep(poll_secs)
+                if sleep_or_stop(poll_secs):
+                    break
 
             except InvalidSessionIdException as e:
                 logger.exception("InvalidSessionIdException: %s; recreate driver", e)
                 self._shutdown_driver("invalid session id")
-                time.sleep(2)
+                if sleep_or_stop(2):
+                    break
                 self._open_driver("recover invalid session")
-                time.sleep(poll_secs)
+                if sleep_or_stop(poll_secs):
+                    break
 
             except TimeoutException:
                 logger.info("Timeout waiting for UI at %s; refreshing; next check in %ss", self._safe_url(), poll_secs)
@@ -155,11 +179,13 @@ class AttendanceService:
                     logger.exception("Failed to refresh after TimeoutException; recreating driver")
                     self._shutdown_driver("refresh failed after timeout")
                     self._open_driver("recover after timeout")
-                time.sleep(poll_secs)
+                if sleep_or_stop(poll_secs):
+                    break
 
             except WebDriverException as e:
                 logger.exception("WebDriverException: %s; will try refresh", e)
-                time.sleep(3)
+                if sleep_or_stop(3):
+                    break
                 try:
                     if self.driver:
                         self.driver.refresh()
@@ -167,11 +193,13 @@ class AttendanceService:
                     logger.exception("Failed to refresh after WebDriverException; recreating driver")
                     self._shutdown_driver("refresh failed after wde")
                     self._open_driver("recover after wde")
-                time.sleep(poll_secs)
+                if sleep_or_stop(poll_secs):
+                    break
 
             except Exception:
                 logger.exception("Unexpected error in run_loop; retrying in %ss", poll_secs)
-                time.sleep(poll_secs)
+                if sleep_or_stop(poll_secs):
+                    break
 
     def shutdown(self) -> None:
         self._shutdown_driver("service shutdown")

@@ -1,0 +1,20 @@
+# Multi-user configuration for AttendBot.
+# Copy to users.toml and fill in credentials.
+# Each user gets their own WSP account and Telegram chat for notifications.
+# One bot token (TG_BOT_TOKEN in .env) is used for all users.
+
+[[user]]
+wsp_login = "student_one"
+wsp_password = "password1"
+tg_chat_id = "123456789"
+
+[[user]]
+wsp_login = "student_two"
+wsp_password = "password2"
+tg_chat_id = "987654321"
+
+# Optional: same key names also work
+# [[users]]
+# login = "..."
+# password = "..."
+# chat_id = "..."
