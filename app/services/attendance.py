@@ -11,6 +11,8 @@ from selenium.common.exceptions import (
     TimeoutException,
     WebDriverException,
     InvalidSessionIdException,
+    NoSuchElementException,
+    StaleElementReferenceException,
 )
 from selenium.webdriver.remote.webdriver import WebDriver
 
@@ -19,6 +21,10 @@ from ..pages.login_page import LoginPage
 from ..schedule import Schedule
 
 logger = logging.getLogger(__name__)
+
+
+class LoginFailed(Exception):
+    """Raised when WSP shows a global login error dialog."""
 
 class AttendanceService:
     ATTEND_BTN = (By.XPATH, "//div[contains(@class,'v-button') and contains(@class,'primary')]")
@@ -48,7 +54,6 @@ class AttendanceService:
 
         self.user_login = user_login
         self.user_tag = user_tag
-        self._login_error_notified = False
 
         logger.info("AttendanceService initialized (wait_seconds=%s, tz=%s)", wait_seconds, self.schedule.tz.key)
 
@@ -64,21 +69,22 @@ class AttendanceService:
         try:
             self.tg.send_message(message)
         except Exception:
-            logger.warning("Failed to send Telegram notification")
+            logger.exception("Failed to send Telegram notification for %s", self.user_login)
 
     def _rebind_driver(self, driver: WebDriver) -> None:
         self.driver = driver
         self.wait = WebDriverWait(driver, self._wait_seconds)
         self.login_page = LoginPage(driver, self._wait_seconds)
 
-    def _open_driver(self, reason: str) -> None:
+    def _open_driver(self, reason: str, notify: bool = True) -> None:
         logger.info("Opening WebDriver (reason: %s)", reason)
         drv = self._create_driver()
         self._rebind_driver(drv)
         drv.get(self.base_url)
-        self._notify(f"🔧 Browser opened ({reason})")
+        if notify:
+            self._notify(f"🔧 Browser opened ({reason})")
 
-    def _shutdown_driver(self, reason: str) -> None:
+    def _shutdown_driver(self, reason: str, notify: bool = True) -> None:
         if not self.driver:
             return
         logger.info("Closing WebDriver (reason: %s)", reason)
@@ -90,7 +96,8 @@ class AttendanceService:
             self.driver = None
             self.wait = None
             self.login_page = None
-        self._notify(f"🌙 Browser closed ({reason})")
+        if notify:
+            self._notify(f"🌙 Browser closed ({reason})")
 
     def _safe_url(self) -> str:
         try:
@@ -100,22 +107,76 @@ class AttendanceService:
 
     # ---------- domain ----------
 
+    def _find_login_error_message(self) -> Optional[str]:
+        """Detect text inside the global error dialog (e.g. 'Неверный логин или пароль.')."""
+        if not self.driver:
+            return None
+        try:
+            elems = self.driver.find_elements(
+                By.CSS_SELECTOR,
+                "div.v-window.global-error.v-window-global-error .v-label.v-widget",
+            )
+            for el in elems:
+                text = (el.text or "").strip()
+                if text:
+                    return text
+        except Exception:
+            return None
+        return None
+
     def ensure_logged_in(self, username: str, password: str) -> None:
+        """If we're on the login page – perform login and wait for result (success or error)."""
         if not (self.driver and self.wait and self.login_page):
             raise RuntimeError("Driver is not initialized")
+
         logger.debug("Checking login state at %s", self._safe_url())
-        if self.login_page.at_login():
-            logger.info("Detected login screen → attempting login")
-            self.login_page.login(username, password)
-            logger.info("Login submitted")
+        if not self.login_page.at_login():
+            return
+
+        logger.info("Detected login screen → attempting login")
+        self.login_page.login(username, password)
+        logger.info("Login submitted")
+
+        # Give page a few seconds to either leave login screen or show an error dialog.
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            msg = self._find_login_error_message()
+            if msg:
+                self._notify(f"Login error: {msg}")
+                raise LoginFailed(msg)
+
+            if not self.login_page.at_login():
+                # Successfully left login page.
+                return
+
+            time.sleep(0.5)
+
+        # After waiting, final check for error dialog.
+        msg = self._find_login_error_message()
+        if msg:
+            self._notify(f"Login error: {msg}")
+            raise LoginFailed(msg)
 
     def try_attend_once(self) -> bool:
         if not (self.driver and self.wait):
             raise RuntimeError("Driver is not initialized")
         logger.debug("Waiting for ATTEND button…")
-        btn = self.wait.until(EC.element_to_be_clickable(self.ATTEND_BTN))
-        logger.info("Clicking ATTEND at %s", self._safe_url())
-        btn.click()
+        # Poll for ATTEND button up to ~0.5s with simple find/click to avoid stale issues.
+        deadline = time.time() + 0.5
+        last_exc: Exception | None = None
+        while time.time() < deadline:
+            try:
+                btn = self.driver.find_element(*self.ATTEND_BTN)
+                if btn.is_displayed() and btn.is_enabled():
+                    logger.info("Clicking ATTEND at %s", self._safe_url())
+                    btn.click()
+                    break
+            except (NoSuchElementException, StaleElementReferenceException) as e:
+                last_exc = e
+            time.sleep(0.1)
+        else:
+            # Timed out waiting for ATTEND – let caller handle as a soft miss.
+            raise TimeoutException(f"ATTEND button not found: {last_exc}")
 
         logger.debug("Waiting for lesson label…")
         lesson_text = self.wait.until(EC.presence_of_element_located(self.LESSON_LABEL)).text
@@ -135,20 +196,14 @@ class AttendanceService:
         stop_event: Optional[threading.Event] = None,
     ) -> None:
 
-        logger.info("Starting schedule-aware loop (poll=%ss, tz=%s)", poll_secs, self.schedule.tz.key)
+        logger.info("Starting loop (poll=%ss, tz=%s)", poll_secs, self.schedule.tz.key)
 
         def sleep_or_stop(seconds: int) -> bool:
-            """Sleep up to `seconds`; return True if stopped early."""
+            """Sleep up to `seconds`; return True if we should stop."""
             if stop_event is None:
                 time.sleep(seconds)
                 return False
-            chunk = 2
-            remaining = max(0, seconds)
-            while remaining > 0:
-                if stop_event.wait(timeout=min(remaining, chunk)):
-                    return True
-                remaining -= chunk
-            return False
+            return stop_event.wait(timeout=seconds)
 
         while stop_event is None or not stop_event.is_set():
             now = datetime.now(self.schedule.tz)
@@ -156,7 +211,7 @@ class AttendanceService:
 
             if secs > 0:
                 if self.driver:
-                    self._shutdown_driver("outside schedule window")
+                    self._shutdown_driver("outside schedule window", notify=False)
                 wake = now + timedelta(seconds=secs)
                 logger.info("Outside schedule — sleeping until %s (%ds)", wake.strftime("%Y-%m-%d %H:%M:%S %Z"), secs)
                 if sleep_or_stop(secs):
@@ -164,61 +219,29 @@ class AttendanceService:
                 continue
 
             if not self.driver:
-                self._open_driver("enter schedule window")
+                self._open_driver("enter schedule window", notify=False)
 
             try:
                 self.ensure_logged_in(username, password)
-                self.try_attend_once()
-                logger.debug("Sleeping %ss (inside window)", poll_secs)
-                if sleep_or_stop(poll_secs):
-                    break
-
-            except InvalidSessionIdException as e:
-                logger.exception("InvalidSessionIdException: %s; recreate driver", e)
-                self._shutdown_driver("invalid session id")
-                if sleep_or_stop(2):
-                    break
-                self._open_driver("recover invalid session")
-                if sleep_or_stop(poll_secs):
-                    break
-
-            except TimeoutException:
-                logger.info("Timeout waiting for UI at %s; refreshing; next check in %ss", self._safe_url(), poll_secs)
-
-                # If we are still on the login screen, treat this as a login error.
-                is_probably_login = False
                 try:
-                    if self.driver and self.driver.find_elements(*LoginPage.USERNAME):
-                        is_probably_login = True
-                except Exception:
-                    is_probably_login = False
-
-                if is_probably_login and not self._login_error_notified:
-                    self._login_error_notified = True
-                    self._notify("Login error: still on login page. Check WSP login/password.")
-                try:
-                    if self.driver:
-                        self.driver.refresh()
-                except Exception:
-                    logger.exception("Failed to refresh after TimeoutException; recreating driver")
-                    self._shutdown_driver("refresh failed after timeout")
-                    self._open_driver("recover after timeout")
+                    self.try_attend_once()
+                except TimeoutException:
+                    logger.info("ATTEND not available yet at %s; retry in %ss", self._safe_url(), poll_secs)
+                logger.info("Sleeping %ss (inside window) for %s", poll_secs, self.user_login)
                 if sleep_or_stop(poll_secs):
                     break
 
-            except WebDriverException as e:
-                logger.exception("WebDriverException: %s; will try refresh", e)
+            except LoginFailed as e:
+                logger.error("Login failed for %s: %s – stopping worker", self.user_login, e)
+                # Driver will be closed by shutdown() from the caller.
+                break
+
+            except (InvalidSessionIdException, WebDriverException) as e:
+                logger.exception("WebDriverException/InvalidSessionId: %s; recreating driver", e)
+                self._shutdown_driver("webdriver error")
                 if sleep_or_stop(3):
                     break
-                try:
-                    if self.driver:
-                        self.driver.refresh()
-                except Exception:
-                    logger.exception("Failed to refresh after WebDriverException; recreating driver")
-                    self._shutdown_driver("refresh failed after wde")
-                    self._open_driver("recover after wde")
-                if sleep_or_stop(poll_secs):
-                    break
+                self._open_driver("recover after webdriver error")
 
             except Exception:
                 logger.exception("Unexpected error in run_loop; retrying in %ss", poll_secs)
