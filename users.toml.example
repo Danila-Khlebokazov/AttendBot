@@ -2,19 +2,23 @@
 # Copy to users.toml and fill in credentials.
 # Each user gets their own WSP account and Telegram chat for notifications.
 # One bot token (TG_BOT_TOKEN in .env) is used for all users.
+# Optional: tg_tag/tag is a label or @mention used in notifications.
 
 [[user]]
 wsp_login = "student_one"
 wsp_password = "password1"
 tg_chat_id = "123456789"
+tg_tag = "@student_one"
 
 [[user]]
 wsp_login = "student_two"
 wsp_password = "password2"
 tg_chat_id = "987654321"
+tg_tag = "@student_two"
 
 # Optional: same key names also work
 # [[users]]
 # login = "..."
 # password = "..."
 # chat_id = "..."
+# tag = "@username"

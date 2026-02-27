@@ -28,6 +28,7 @@ Automatically attend for a subject and send a message via Telegram bot. Supports
      WSP_LOGIN=...
      WSP_PASSWORD=...
      TG_CHAT_ID=...   # from @userinfobot or @chatid_echo_bot
+     TG_TAG=@username # optional label/mention used in notifications
      ```
 
    * **Multiple users** — create `users.toml` from the example:
@@ -43,11 +44,14 @@ Automatically attend for a subject and send a message via Telegram bot. Supports
      wsp_login = "student_one"
      wsp_password = "password1"
      tg_chat_id = "123456789"
+     tg_tag = "@student_one"   # optional label/mention used in notifications
 
      [[user]]
      wsp_login = "student_two"
      wsp_password = "password2"
+     tg_password = "password2"
      tg_chat_id = "987654321"
+     tg_tag = "@student_two"
      ```
 
      Each user runs in a separate thread with their own browser session; all share the same schedule.
@@ -105,11 +109,18 @@ Automatically attend for a subject and send a message via Telegram bot. Supports
 | `WSP_LOGIN`     | ⚠️ single-user | `a_student`                              | WSP username (required only if not using `users.toml`)                |
 | `WSP_PASSWORD`  | ⚠️ single-user | `********`                               | WSP password (required only if not using `users.toml`)                |
 | `TG_CHAT_ID`    | ⚠️ single-user | `123456789`                              | Telegram chat ID (required only if not using `users.toml`)            |
+| `TG_TAG`        | ⛔️            | `@student`                               | Optional label/mention; appears in notifications next to login        |
 | `USERS_PATH`    | ⛔️            | `users.toml`                             | Path to multi-user config; if present and non-empty, overrides .env   |
 | `REMOTE_URL`    | ⛔️ (defaults) | `http://selenium:4444/wd/hub`            | Selenium WebDriver URL                                                  |
 | `BASE_URL`      | ⛔️            | `https://wsp.kbtu.kz/RegistrationOnline` | WSP page                                                               |
 | `SCHEDULE_PATH` | ⛔️            | `schedule.toml`                          | Path to schedule file (shared by all users)                           |
 | `LOG_LEVEL`     | ⛔️            | `INFO` or `DEBUG`                        | Logging level                                                          |
+
+## Notifications
+
+- Per-user messages are prefixed with `[login]` or `[login / @tag]`.
+- Startup/stop/crash messages list all accounts as `login` or `login (@tag)` and are sent once per Telegram chat.
+- On login, the bot tries to click the GB flag to switch the UI language to English; if it fails, it continues with the current language.
 
 For **multi-user**, create `users.toml` (see `users.toml.example`). The bot runs one worker thread per user; ensure Selenium has enough capacity (e.g. `SE_NODE_MAX_SESSIONS` in docker-compose).
 

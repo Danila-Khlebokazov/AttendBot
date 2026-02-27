@@ -31,6 +31,8 @@ class AttendanceService:
         *,
         base_url: str,
         create_driver: Callable[[], WebDriver],
+        user_login: str,
+        user_tag: Optional[str] = None,
         wait_seconds: int = 30,
         driver: Optional[WebDriver] = None,
     ) -> None:
@@ -44,13 +46,23 @@ class AttendanceService:
         self._create_driver = create_driver
         self.base_url = base_url
 
+        self.user_login = user_login
+        self.user_tag = user_tag
+        self._login_error_notified = False
+
         logger.info("AttendanceService initialized (wait_seconds=%s, tz=%s)", wait_seconds, self.schedule.tz.key)
 
     # ---------- infra ----------
 
+    def _user_prefix(self) -> str:
+        if self.user_tag:
+            return f"[{self.user_login} / {self.user_tag}]"
+        return f"[{self.user_login}]"
+
     def _notify(self, text: str) -> None:
+        message = f"{self._user_prefix()} {text}"
         try:
-            self.tg.send_message(text)
+            self.tg.send_message(message)
         except Exception:
             logger.warning("Failed to send Telegram notification")
 
@@ -64,7 +76,7 @@ class AttendanceService:
         drv = self._create_driver()
         self._rebind_driver(drv)
         drv.get(self.base_url)
-        #self._notify(f"🔧 Browser opened ({reason})")
+        self._notify(f"🔧 Browser opened ({reason})")
 
     def _shutdown_driver(self, reason: str) -> None:
         if not self.driver:
@@ -78,7 +90,7 @@ class AttendanceService:
             self.driver = None
             self.wait = None
             self.login_page = None
-        #self._notify(f"🌙 Browser closed ({reason})")
+        self._notify(f"🌙 Browser closed ({reason})")
 
     def _safe_url(self) -> str:
         try:
@@ -172,6 +184,18 @@ class AttendanceService:
 
             except TimeoutException:
                 logger.info("Timeout waiting for UI at %s; refreshing; next check in %ss", self._safe_url(), poll_secs)
+
+                # If we are still on the login screen, treat this as a login error.
+                is_probably_login = False
+                try:
+                    if self.driver and self.driver.find_elements(*LoginPage.USERNAME):
+                        is_probably_login = True
+                except Exception:
+                    is_probably_login = False
+
+                if is_probably_login and not self._login_error_notified:
+                    self._login_error_notified = True
+                    self._notify("Login error: still on login page. Check WSP login/password.")
                 try:
                     if self.driver:
                         self.driver.refresh()

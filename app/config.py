@@ -11,10 +11,12 @@ load_dotenv()
 
 @dataclass(frozen=True)
 class User:
-    """Single user: WSP credentials and Telegram chat for notifications."""
+    """Single user: WSP credentials, Telegram chat and optional tag."""
+
     wsp_login: str
     wsp_password: str
     tg_chat_id: str
+    tg_tag: str | None = None
 
 
 @dataclass(frozen=True)
@@ -43,12 +45,14 @@ def _load_users_from_toml(path: str) -> List[User]:
         login = entry.get("wsp_login") or entry.get("login")
         password = entry.get("wsp_password") or entry.get("password")
         chat_id = entry.get("tg_chat_id") or entry.get("chat_id")
+        tag = entry.get("tg_tag") or entry.get("tag")
         if login is not None and password is not None and chat_id is not None:
             out.append(
                 User(
                     wsp_login=str(login).strip(),
                     wsp_password=str(password),
                     tg_chat_id=str(chat_id).strip(),
+                    tg_tag=str(tag).strip() if tag is not None else None,
                 )
             )
     return out
@@ -58,9 +62,17 @@ def _single_user_from_env() -> List[User]:
     login = os.getenv("WSP_LOGIN")
     password = os.getenv("WSP_PASSWORD")
     chat_id = os.getenv("TG_CHAT_ID")
+    tag = os.getenv("TG_TAG")
     if not all((login, password, chat_id)):
         return []
-    return [User(wsp_login=login.strip(), wsp_password=password, tg_chat_id=chat_id.strip())]
+    return [
+        User(
+            wsp_login=login.strip(),
+            wsp_password=password,
+            tg_chat_id=chat_id.strip(),
+            tg_tag=tag.strip() if tag else None,
+        )
+    ]
 
 
 def get_settings() -> Settings:

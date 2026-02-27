@@ -40,6 +40,8 @@ def run_user_worker(
         schedule=schedule,
         base_url=settings.base_url,
         create_driver=create_driver,
+        user_login=user.wsp_login,
+        user_tag=user.tg_tag,
         wait_seconds=30,
         driver=None,
     )
@@ -62,7 +64,12 @@ def main() -> int:
     def now_s():
         return datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S %Z")
 
-    accounts_str = ", ".join(u.wsp_login for u in settings.users)
+    def user_label(u: User) -> str:
+        if u.tg_tag:
+            return f"{u.wsp_login} ({u.tg_tag})"
+        return u.wsp_login
+
+    accounts_str = ", ".join(user_label(u) for u in settings.users)
 
     def safe_notify(user: User, text: str) -> None:
         try:
