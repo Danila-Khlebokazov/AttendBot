@@ -161,8 +161,8 @@ class AttendanceService:
         if not (self.driver and self.wait):
             raise RuntimeError("Driver is not initialized")
         logger.debug("Waiting for ATTEND button…")
-        # Poll for ATTEND button up to ~0.5s with simple find/click to avoid stale issues.
-        deadline = time.time() + 0.5
+        # Poll for ATTEND button up to ~5s with simple find/click to avoid stale issues.
+        deadline = time.time() + 5
         last_exc: Exception | None = None
         while time.time() < deadline:
             try:

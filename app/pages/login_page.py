@@ -42,8 +42,8 @@ class LoginPage:
         # Prefer English UI where possible (affects texts we match later).
         self.switch_to_english()
 
-        # Simple polling loop (up to ~5s) to find and fill username/password.
-        deadline = time.time() + 5
+        # Simple polling loop (up to ~10s) to find and fill username/password.
+        deadline = time.time() + 10
         last_exc: Exception | None = None
         while time.time() < deadline:
             try:
